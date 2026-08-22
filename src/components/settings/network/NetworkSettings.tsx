@@ -225,11 +225,14 @@ const ClientSection: React.FC = () => {
       return;
     }
 
+    // Every field of the info document is optional: a generic
+    // OpenAI-compatible server answers with none of them, and even a Handy
+    // server may omit some. Absent means "not advertised", never "unusable".
     setProbe({
       state: "ok",
-      server: result.data.server,
-      streaming: result.data.streaming,
-      loadedModel: result.data.loaded_model,
+      server: result.data.server || t("settings.network.client.genericServer"),
+      streaming: result.data.streaming ?? false,
+      loadedModel: result.data.loaded_model ?? null,
     });
 
     // A failed model list is not a failed connection: a server can transcribe

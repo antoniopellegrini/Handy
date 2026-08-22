@@ -17,9 +17,9 @@
 //!   client falls back to batch whenever the server does not support it.
 //!
 //! Every entry point here is blocking and drives the async HTTP client through
-//! [`tauri::async_runtime::block_on`]. That matches the callers: the recording
-//! path already runs transcription on a dedicated thread or via
-//! `spawn_blocking`, never on a runtime worker.
+//! [`tauri::async_runtime::block_on`]. The streaming path runs on its own
+//! `thread::spawn`ed worker, so blocking there is free. The batch path is not so
+//! lucky — see [`block_on_anywhere`].
 
 use std::time::Duration;
 
@@ -170,6 +170,36 @@ async fn error_for_status(response: reqwest::Response, context: &str) -> anyhow:
 // Batch
 // ---------------------------------------------------------------------------
 
+/// Drive a future to completion from a synchronous caller, whatever thread that
+/// caller is on.
+///
+/// `tauri::async_runtime::block_on` panics when the calling thread is already a
+/// runtime worker, and the batch path *is* reached from inside a spawned task:
+/// `actions.rs` calls `TranscriptionManager::transcribe` directly in the
+/// `tauri::async_runtime::spawn` that follows a recording. There the panic is
+/// swallowed by the `JoinHandle` nobody awaits, so the request neither completes
+/// nor errors — the overlay just sits on "Transcribing" forever.
+///
+/// So when a runtime is already driving this thread, hand the wait to a plain
+/// thread of our own. Off-runtime callers (the streaming worker) block directly
+/// and pay nothing.
+fn block_on_anywhere<F>(future: F) -> Result<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Ok(tauri::async_runtime::block_on(future));
+    }
+
+    std::thread::Builder::new()
+        .name("handy-remote-batch".into())
+        .spawn(move || tauri::async_runtime::block_on(future))
+        .context("failed to spawn the remote transcription thread")?
+        .join()
+        .map_err(|_| anyhow!("the remote transcription thread panicked"))
+}
+
 /// Transcribe a whole recording on the remote server.
 ///
 /// Blocking: intended for the same call sites as the local engine.
@@ -178,7 +208,7 @@ pub fn transcribe(settings: &AppSettings, samples: Vec<f32>) -> Result<String> {
     let language = settings.selected_language.clone();
     let translate = settings.translate_to_english;
 
-    tauri::async_runtime::block_on(transcribe_async(target, samples, language, translate))
+    block_on_anywhere(transcribe_async(target, samples, language, translate))?
 }
 
 async fn transcribe_async(
@@ -543,9 +573,16 @@ async fn open_session(
     }
 
     let response = client
+        // Deliberately *not* CONTROL_TIMEOUT — this is not a bookkeeping round
+        // trip. The server takes its engine permit before replying and loads the
+        // requested model first, which on a multi-gigabyte GGUF is tens of
+        // seconds. Worse, giving up early is not a graceful degradation: the
+        // session the server already committed to keeps holding the permit, so
+        // the batch fallback then waits out the server's engine timeout and gets
+        // a 503. Wait for the open with the same budget as inference itself
+        // (`client(target.timeout)`), which is what the user configured.
         .post(target.url("/handy/v1/stream"))
         .bearer_auth(&target.token)
-        .timeout(CONTROL_TIMEOUT)
         .json(&serde_json::json!({
             "model": target.model,
             "language": language,

@@ -816,6 +816,14 @@ async setSelectedChannel(channel: number | null) : Promise<Result<null, string>>
 async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<void> {
     await TAURI_INVOKE("set_model_unload_timeout", { timeout });
 },
+async getModelLoadStatus() : Promise<Result<ModelLoadStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_model_load_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async changeInferenceMode(mode: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_inference_mode", { mode }) };
@@ -848,6 +856,10 @@ async changeServerExposeLan(expose: boolean) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Replace the server token and restart the listener so the old one stops
+ * working immediately.
+ */
 async regenerateServerToken() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("regenerate_server_token") };
@@ -904,6 +916,10 @@ async changeClientTimeout(seconds: number) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Test the address and token the user typed, without saving them: the panel
+ * should be able to validate before committing.
+ */
 async testServerConnection(baseUrl: string, token: string) : Promise<Result<RemoteServerInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("test_server_connection", { baseUrl, token }) };
@@ -912,17 +928,12 @@ async testServerConnection(baseUrl: string, token: string) : Promise<Result<Remo
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * List the models available on a remote server, for the client's model picker.
+ */
 async listServerModels(baseUrl: string, token: string) : Promise<Result<RemoteModel[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_server_models", { baseUrl, token }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async getModelLoadStatus() : Promise<Result<ModelLoadStatus, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_model_load_status") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1063,49 +1074,59 @@ selected_channel?: number | null; clamshell_microphone?: string | null; selected
  * after the target app actually reads the transcript, instead of after a
  * fixed delay. See `paste_tx`. macOS and Windows only.
  */
-reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting;
+reliable_paste?: boolean; typing_tool?: TypingTool; external_script_path?: string | null; filler_word_removal_enabled?: boolean; custom_filler_words?: string[] | null; transcribe_accelerator?: TranscribeAcceleratorSetting; ort_accelerator?: OrtAcceleratorSetting; 
 /**
  * Stable transcribe.cpp device selector. This is derived from the backend's
  * `device_id` when available (or its name for backends such as Metal),
  * never from the process-local device registry index.
  */
-transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_enabled?: boolean;
+transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_enabled?: boolean; 
 /**
  * Which recording overlay to show: None / Minimal / Live. Streaming mode is
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle;
+overlay_style?: OverlayStyle; 
 /**
  * Whether this instance transcribes locally or offloads to a server.
  */
-inference_mode?: InferenceMode;
+inference_mode?: InferenceMode; 
 /**
  * Serve local inference to other machines over HTTP. Independent of
  * `inference_mode` — a GPU box can dictate locally *and* serve.
  */
-server_enabled?: boolean; server_port?: number;
+server_enabled?: boolean; server_port?: number; 
 /**
  * Bind to all interfaces (required to be reachable from another machine).
+ * When false the server is loopback-only, which is useful for testing the
+ * endpoint without exposing it.
  */
-server_expose_lan?: boolean;
+server_expose_lan?: boolean; 
 /**
- * Bearer token every request must present.
+ * Bearer token every request must present. Generated on first enable;
+ * requests are rejected outright while it is empty.
  */
-server_token?: SecretString;
+server_token?: SecretString; 
 /**
- * Base URL of the remote server used when `inference_mode` is `client`.
+ * Base URL of the remote server used when `inference_mode` is `Client`,
+ * e.g. `http://192.168.1.20:8756`.
  */
-client_base_url?: string; client_token?: SecretString;
+client_base_url?: string; client_token?: SecretString; 
 /**
- * Model id to request from the server. Empty means "whatever the server has loaded".
+ * Model id to request from the server. Empty means "whatever the server
+ * has loaded".
  */
-client_model?: string; client_streaming?: boolean; client_fallback_local?: boolean; client_timeout_secs?: number }
-export type InferenceMode = "local" | "client"
-export type SecretString = string
-export type RemoteServerInfo = { server: string; version: string; loaded_model: string | null; streaming: boolean }
-export type RemoteModel = { id: string; name: string | null }
-export type ServerStatus = { running: boolean; bound_address: string | null; client_urls: string[]; token: string }
+client_model?: string; 
+/**
+ * Use the SSE streaming session for live partials instead of a single
+ * batch request. Ignored when the server does not advertise streaming.
+ */
+client_streaming?: boolean; 
+/**
+ * If the server is unreachable, fall back to the local model instead of
+ * failing. Only useful when a local model is actually downloaded.
+ */
+client_fallback_local?: boolean; client_timeout_secs?: number }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }
@@ -1130,6 +1151,16 @@ export type ImplementationChangeResult = { success: boolean;
  * List of binding IDs that were reset to defaults due to incompatibility
  */
 reset_bindings: string[] }
+/**
+ * Where transcription inference actually runs.
+ * 
+ * `Local` is the historical behaviour: the model is loaded into this process.
+ * `Client` offloads every transcription to a Handy (or any OpenAI-compatible)
+ * server over the network, so a machine without a dedicated GPU can use a
+ * larger, more accurate model running elsewhere. Serving is orthogonal — a
+ * machine can be `Local` and still run the server for others.
+ */
+export type InferenceMode = "local" | "client"
 export type KeyboardDiagnosticReport = { secure_input_enabled: boolean; culprit_pid: number | null; culprit_name: string | null; 
 /**
  * Counts only — key identity is deliberately never captured.
@@ -1179,7 +1210,37 @@ export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }
 export type RecordingRetentionPeriod = "never" | "preserve_limit" | "days_3" | "weeks_2" | "months_3"
+/**
+ * One entry of `GET /v1/models`.
+ */
+export type RemoteModel = { id: string; 
+/**
+ * Handy servers add a display name; generic servers do not, and the id is
+ * used instead.
+ */
+name?: string | null }
+/**
+ * A remote server's self-description, as returned by `GET /handy/v1/info`.
+ */
+export type RemoteServerInfo = { 
+/**
+ * `"handy"` for a Handy server; absent or different for a generic
+ * OpenAI-compatible endpoint.
+ */
+server?: string; version?: string; loaded_model?: string | null; 
+/**
+ * Whether the streaming session endpoints are available. Always false for a
+ * non-Handy server, which forces the batch path.
+ */
+streaming?: boolean }
 export type SecretMap = Partial<{ [key in string]: string }>
+/**
+ * A single secret (bearer token) that never leaks into logs. `AppSettings`
+ * derives `Debug` and is logged wholesale in several places, so tokens must be
+ * redacted at the type level rather than at each call site — same reasoning as
+ * [`SecretMap`].
+ */
+export type SecretString = string
 export type SecureInputStatus = { 
 /**
  * Secure input is currently enabled (live check)
@@ -1212,6 +1273,19 @@ uncovered_bindings: string[];
  * warning banner appears and explains why recording refused.
  */
 recorder_blocked: boolean }
+/**
+ * Everything the settings panel needs to describe the local server's state.
+ */
+export type ServerStatus = { running: boolean; 
+/**
+ * The address actually bound, e.g. `0.0.0.0:8756`. `None` when stopped.
+ */
+bound_address: string | null; 
+/**
+ * LAN addresses a client on another machine can use, with the port already
+ * appended — the value the user copies into the client's settings.
+ */
+client_urls: string[]; token: string }
 export type ShortcutBinding = { id: string; name: string; description: string; default_binding: string; current_binding: string }
 export type SoundTheme = "marimba" | "pop" | "custom"
 /**

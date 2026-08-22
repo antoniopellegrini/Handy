@@ -272,6 +272,7 @@
         "test": "Test",
         "connected": "Connected to {{server}} — model: {{model}}",
         "serverDefault": "Server's choice",
+        "genericServer": "OpenAI-compatible server",
         "noStreaming": "live text unavailable, using batch transcription",
         "model": {
           "title": "Model",

@@ -911,7 +911,7 @@ impl TranscriptionManager {
                 // and let the caller batch-transcribe the same audio, which in
                 // client mode still reaches the server (or the local fallback).
                 info!(
-                    "Live preview unavailable over the network ({err}); using batch transcription"
+                    "Live preview unavailable over the network ({err:#}); using batch transcription"
                 );
                 self.router.clear();
                 drain_until_finalize(rx);
@@ -945,7 +945,7 @@ impl TranscriptionManager {
                         }),
                         Ok(None) => None,
                         Err(err) => {
-                            warn!("Remote stream finalize failed ({err}); falling back to batch");
+                            warn!("Remote stream finalize failed ({err:#}); falling back to batch");
                             None
                         }
                     };
@@ -1352,7 +1352,7 @@ impl TranscriptionManager {
                 let Some(audio) = audio_for_fallback else {
                     return Err(err);
                 };
-                warn!("Remote transcription failed ({err}); falling back to the local model");
+                warn!("Remote transcription failed ({err:#}); falling back to the local model");
                 return self.transcribe_locally_after_fallback(audio, settings);
             }
         };

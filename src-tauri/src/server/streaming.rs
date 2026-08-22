@@ -23,7 +23,9 @@
 //! `open` takes the engine permit and holds it for the whole session, so a
 //! session is mutually exclusive with batch requests and with other sessions.
 //! An abandoned session would therefore wedge the server, so every session has a
-//! watchdog that cancels it after [`SESSION_IDLE_TIMEOUT`] without traffic.
+//! watchdog that cancels it after [`SESSION_IDLE_TIMEOUT`] without traffic —
+//! or after the much shorter [`SESSION_UNCLAIMED_TIMEOUT`] if the client never
+//! came back for it at all.
 //!
 //! # Event routing
 //!
@@ -56,6 +58,18 @@ use crate::managers::transcription::{StreamPhase, StreamWorkKind, TranscribeOver
 /// engine permit released. Generous enough for a long pause mid-dictation,
 /// short enough that a crashed client does not block the server for long.
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A session the client never came back for — no audio pushed, no SSE connect —
+/// is reclaimed this fast, rather than after [`SESSION_IDLE_TIMEOUT`].
+///
+/// `open` can take a long time when it has to load a model, and a client that
+/// gives up while waiting never learns the session id, so it can neither
+/// finalize nor cancel. That session then holds the engine permit for the full
+/// idle timeout, and every request behind it — including the client's own batch
+/// fallback — waits out `ENGINE_WAIT` only to get a 503. A real client connects
+/// its event stream within milliseconds of `open` returning, so anything that
+/// has not been touched within a few seconds is abandoned.
+const SESSION_UNCLAIMED_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bus capacity. Partial-text updates arrive a few times per second; this holds
 /// several seconds of backlog for a slow SSE consumer before dropping the oldest
@@ -122,6 +136,9 @@ struct Session {
     events: Mutex<Option<broadcast::Receiver<StreamEvent>>>,
     /// Millis since the epoch of the last request touching this session.
     last_seen: AtomicU64,
+    /// Set once the client comes back for the session it opened. Until then the
+    /// watchdog holds it to [`SESSION_UNCLAIMED_TIMEOUT`].
+    claimed: AtomicBool,
     /// Set by finalize/cancel so the watchdog does not act on a session that is
     /// already being torn down.
     closed: AtomicBool,
@@ -130,6 +147,22 @@ struct Session {
 impl Session {
     fn touch(&self) {
         self.last_seen.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// The client has come back for this session; it now gets the full idle
+    /// budget instead of the short unclaimed one.
+    fn claim(&self) {
+        self.claimed.store(true, Ordering::Release);
+        self.touch();
+    }
+
+    /// How long this session may sit untouched before the watchdog reclaims it.
+    fn deadline(&self) -> Duration {
+        if self.claimed.load(Ordering::Acquire) {
+            SESSION_IDLE_TIMEOUT
+        } else {
+            SESSION_UNCLAIMED_TIMEOUT
+        }
     }
 
     fn idle_for(&self) -> Duration {
@@ -197,6 +230,7 @@ pub async fn open_session(
         _permit: permit,
         events: Mutex::new(Some(state.streams.bus.subscribe())),
         last_seen: AtomicU64::new(now_ms()),
+        claimed: AtomicBool::new(false),
         closed: AtomicBool::new(false),
     });
 
@@ -234,7 +268,7 @@ pub async fn push_audio(
         .streams
         .get(&id)
         .ok_or_else(|| ApiError::not_found("unknown or expired session"))?;
-    session.touch();
+    session.claim();
 
     if !body.len().is_multiple_of(2) {
         // A split sample means the client's framing is broken; silently dropping
@@ -264,7 +298,7 @@ pub async fn events(
         .streams
         .get(&id)
         .ok_or_else(|| ApiError::not_found("unknown or expired session"))?;
-    session.touch();
+    session.claim();
 
     let receiver = session
         .events
@@ -380,7 +414,8 @@ fn spawn_watchdog(state: Arc<ServerState>, id: String) {
     tauri::async_runtime::spawn(async move {
         // Poll at a fraction of the timeout: the check is two atomic loads, and
         // this bounds how long past the deadline a dead session lingers.
-        let tick = SESSION_IDLE_TIMEOUT / 8;
+        // Poll fast enough to honour the shorter unclaimed deadline too.
+        let tick = SESSION_UNCLAIMED_TIMEOUT / 2;
         loop {
             tokio::time::sleep(tick).await;
 
@@ -390,7 +425,7 @@ fn spawn_watchdog(state: Arc<ServerState>, id: String) {
             if session.closed.load(Ordering::Acquire) {
                 return;
             }
-            if session.idle_for() < SESSION_IDLE_TIMEOUT {
+            if session.idle_for() < session.deadline() {
                 continue;
             }
 

@@ -272,6 +272,7 @@
         "test": "Prova",
         "connected": "Connesso a {{server}} — modello: {{model}}",
         "serverDefault": "Scelta del server",
+        "genericServer": "Server compatibile OpenAI",
         "noStreaming": "testo in tempo reale non disponibile, si usa la trascrizione a blocco",
         "model": {
           "title": "Modello",
