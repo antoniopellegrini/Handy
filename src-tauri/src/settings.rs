@@ -130,6 +130,21 @@ pub enum OverlayStyle {
     Live,
 }
 
+/// Where transcription inference actually runs.
+///
+/// `Local` is the historical behaviour: the model is loaded into this process.
+/// `Client` offloads every transcription to a Handy (or any OpenAI-compatible)
+/// server over the network, so a machine without a dedicated GPU can use a
+/// larger, more accurate model running elsewhere. Serving is orthogonal — a
+/// machine can be `Local` and still run the server for others.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum InferenceMode {
+    #[default]
+    Local,
+    Client,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelUnloadTimeout {
@@ -329,6 +344,38 @@ impl std::ops::DerefMut for SecretMap {
     }
 }
 
+/// A single secret (bearer token) that never leaks into logs. `AppSettings`
+/// derives `Debug` and is logged wholesale in several places, so tokens must be
+/// redacted at the type level rather than at each call site — same reasoning as
+/// [`SecretMap`].
+#[derive(Clone, Default, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct SecretString(String);
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            f.write_str("\"\"")
+        } else {
+            f.write_str("\"[REDACTED]\"")
+        }
+    }
+}
+
+impl SecretString {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /* still handy for composing the initial JSON in the store ------------- */
 /// The container-level `serde(default)` (backed by the `Default` impl below)
 /// guarantees every field — including ones added in the future — falls back to
@@ -481,6 +528,64 @@ pub struct AppSettings {
     /// `overlay_position` (position `none` → style `None`).
     #[serde(default = "default_overlay_style")]
     pub overlay_style: OverlayStyle,
+
+    // ---- Networked inference (server / client modes) --------------------
+    /// Whether this instance transcribes locally or offloads to a server.
+    #[serde(default)]
+    pub inference_mode: InferenceMode,
+    /// Serve local inference to other machines over HTTP. Independent of
+    /// `inference_mode` — a GPU box can dictate locally *and* serve.
+    #[serde(default)]
+    pub server_enabled: bool,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    /// Bind to all interfaces (required to be reachable from another machine).
+    /// When false the server is loopback-only, which is useful for testing the
+    /// endpoint without exposing it.
+    #[serde(default = "default_server_expose_lan")]
+    pub server_expose_lan: bool,
+    /// Bearer token every request must present. Generated on first enable;
+    /// requests are rejected outright while it is empty.
+    #[serde(default)]
+    pub server_token: SecretString,
+    /// Base URL of the remote server used when `inference_mode` is `Client`,
+    /// e.g. `http://192.168.1.20:8756`.
+    #[serde(default)]
+    pub client_base_url: String,
+    #[serde(default)]
+    pub client_token: SecretString,
+    /// Model id to request from the server. Empty means "whatever the server
+    /// has loaded".
+    #[serde(default)]
+    pub client_model: String,
+    /// Use the SSE streaming session for live partials instead of a single
+    /// batch request. Ignored when the server does not advertise streaming.
+    #[serde(default = "default_client_streaming")]
+    pub client_streaming: bool,
+    /// If the server is unreachable, fall back to the local model instead of
+    /// failing. Only useful when a local model is actually downloaded.
+    #[serde(default)]
+    pub client_fallback_local: bool,
+    #[serde(default = "default_client_timeout_secs")]
+    pub client_timeout_secs: u64,
+}
+
+fn default_server_port() -> u16 {
+    8756
+}
+
+fn default_server_expose_lan() -> bool {
+    // Enabling the server at all is an explicit act, and the whole point is
+    // reachability from another machine; loopback-only is the opt-out.
+    true
+}
+
+fn default_client_streaming() -> bool {
+    true
+}
+
+fn default_client_timeout_secs() -> u64 {
+    120
 }
 
 fn default_model() -> String {
@@ -935,6 +1040,17 @@ pub fn get_default_settings() -> AppSettings {
         extra_recording_buffer_ms: 0,
         vad_enabled: default_vad_enabled(),
         overlay_style: default_overlay_style(),
+        inference_mode: InferenceMode::default(),
+        server_enabled: false,
+        server_port: default_server_port(),
+        server_expose_lan: default_server_expose_lan(),
+        server_token: SecretString::default(),
+        client_base_url: String::new(),
+        client_token: SecretString::default(),
+        client_model: String::new(),
+        client_streaming: default_client_streaming(),
+        client_fallback_local: false,
+        client_timeout_secs: default_client_timeout_secs(),
     }
 }
 

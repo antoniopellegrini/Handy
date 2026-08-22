@@ -5,7 +5,7 @@ use crate::audio_toolkit::{
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
-    get_settings, AppSettings, ModelUnloadTimeout, OrtAcceleratorSetting,
+    get_settings, AppSettings, InferenceMode, ModelUnloadTimeout, OrtAcceleratorSetting,
     TranscribeAcceleratorSetting,
 };
 use anyhow::Result;
@@ -93,6 +93,25 @@ pub struct StreamPhaseEvent {
     /// Present only when `phase` is `Working`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<StreamWorkKind>,
+}
+
+/// Per-call overrides for a single transcription, layered over the persisted
+/// settings without mutating them.
+///
+/// The local dictation path always passes [`Default`] — its intent *is* the
+/// settings. This exists for the inference server, where the OpenAI-compatible
+/// request carries its own `language` and translation intent that must not leak
+/// into the serving machine's own preferences.
+#[derive(Clone, Debug, Default)]
+pub struct TranscribeOverrides {
+    /// Language intent for this call ("auto" or an ISO 639-1 code).
+    pub language: Option<String>,
+    pub translate_to_english: Option<bool>,
+    /// Run on the local engine even when the persisted mode is
+    /// [`InferenceMode::Client`]. This is what terminates the remote → local
+    /// fallback: the recursive call re-reads the persisted settings, so without
+    /// an explicit override it would route straight back to the failed server.
+    pub force_local: bool,
 }
 
 /// Commands sent to the streaming worker thread. Audio frames and the finalize
@@ -732,6 +751,14 @@ impl TranscriptionManager {
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
+        // Client mode never runs a local engine, so pre-loading one would spend
+        // RAM (and VRAM) on a model no transcription will use — and would log a
+        // load failure on a machine that legitimately has no model downloaded.
+        // The remote → local fallback loads on demand instead.
+        if get_settings(&self.app_handle).inference_mode == InferenceMode::Client {
+            return;
+        }
+
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return;
@@ -802,6 +829,16 @@ impl TranscriptionManager {
     /// `None` so the caller falls back to batch transcription. Frames sent
     /// before the stream begins queue on the channel and are not lost.
     pub fn start_stream(&self) {
+        self.start_stream_with(TranscribeOverrides::default())
+    }
+
+    /// [`Self::start_stream`] with per-session overrides.
+    ///
+    /// Used by the inference server, where the client's `language` belongs to the
+    /// session rather than to the serving machine's own preferences — and where
+    /// `force_local` keeps a server that is itself configured as a client from
+    /// proxying the session onward.
+    pub fn start_stream_with(&self, overrides: TranscribeOverrides) {
         if self.router.is_open() || self.active_stream_worker.load(Ordering::Acquire) != 0 {
             warn!("start_stream called while a stream worker is already active");
             return;
@@ -818,11 +855,117 @@ impl TranscriptionManager {
         let rx = self.router.open();
         self.stream_active.store(false, Ordering::Release);
 
+        let remote = !overrides.force_local
+            && get_settings(&self.app_handle).inference_mode == InferenceMode::Client;
         let manager = self.clone();
-        thread::spawn(move || manager.run_stream_worker(rx, worker_id));
+        thread::spawn(move || {
+            if remote {
+                manager.run_remote_stream_worker(rx, worker_id)
+            } else {
+                manager.run_stream_worker(rx, worker_id, overrides)
+            }
+        });
     }
 
-    fn run_stream_worker(&self, rx: mpsc::Receiver<StreamCmd>, worker_id: u64) {
+    /// Stream worker for client mode: the same command channel and guards as
+    /// [`Self::run_stream_worker`], but the audio goes to a remote server and the
+    /// live text comes back over SSE instead of out of a local engine.
+    ///
+    /// No engine lease is taken — there is no local engine in play — so a client
+    /// machine needs no model downloaded at all.
+    fn run_remote_stream_worker(&self, rx: mpsc::Receiver<StreamCmd>, worker_id: u64) {
+        let _worker = StreamWorkerGuard {
+            worker_id,
+            active_stream_worker: Arc::clone(&self.active_stream_worker),
+            active_engine_lease: Arc::clone(&self.active_engine_lease),
+            stream_active: Arc::clone(&self.stream_active),
+        };
+
+        let settings = get_settings(&self.app_handle);
+        let manager = self.clone();
+        let session = crate::remote_client::StreamSession::open(&settings, move |event| {
+            match event {
+                crate::remote_client::RemoteStreamEvent::Text {
+                    committed,
+                    tentative,
+                } => manager.emit_stream_text(&committed, &tentative),
+                crate::remote_client::RemoteStreamEvent::Phase {} => {
+                    manager.emit_stream_working(StreamWorkKind::Transcribing)
+                }
+                // The finalize reply is the authoritative result, so these are
+                // not shown to the user — but a server-side failure is worth a
+                // log line, since the batch fallback would otherwise hide it.
+                crate::remote_client::RemoteStreamEvent::Final { text } => {
+                    debug!("Remote stream reported final text ({} chars)", text.len())
+                }
+                crate::remote_client::RemoteStreamEvent::Error { message } => {
+                    warn!("Remote stream reported an error: {message}")
+                }
+            }
+        });
+
+        let mut session = match session {
+            Ok(session) => session,
+            Err(err) => {
+                // Same contract as an unstreamable local model: report nothing
+                // and let the caller batch-transcribe the same audio, which in
+                // client mode still reaches the server (or the local fallback).
+                info!(
+                    "Live preview unavailable over the network ({err}); using batch transcription"
+                );
+                self.router.clear();
+                drain_until_finalize(rx);
+                return;
+            }
+        };
+
+        self.stream_active.store(true, Ordering::Release);
+
+        while let Ok(cmd) = rx.recv() {
+            match cmd {
+                StreamCmd::Feed(frame) => session.push(&frame),
+                StreamCmd::Finalize(reply) => {
+                    self.emit_stream_working(StreamWorkKind::Transcribing);
+                    let finalized = match session.finalize() {
+                        Ok(Some(text)) => Some(FinalizedStreamText {
+                            // The client applies its own post-processing in
+                            // `finalize_stream`, so the evidence mirrors the
+                            // request's language intent, as in the batch path.
+                            output_language: if settings.translate_to_english {
+                                OutputLanguageEvidence::TranslatedToEnglish
+                            } else if settings.selected_language == "auto" {
+                                OutputLanguageEvidence::Unknown
+                            } else {
+                                OutputLanguageEvidence::UserSelected(
+                                    settings.selected_language.clone(),
+                                )
+                            },
+                            text,
+                            supported_languages: Vec::new(),
+                        }),
+                        Ok(None) => None,
+                        Err(err) => {
+                            warn!("Remote stream finalize failed ({err}); falling back to batch");
+                            None
+                        }
+                    };
+                    let _ = reply.send(finalized);
+                    return;
+                }
+                StreamCmd::Cancel => {
+                    session.cancel();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn run_stream_worker(
+        &self,
+        rx: mpsc::Receiver<StreamCmd>,
+        worker_id: u64,
+        overrides: TranscribeOverrides,
+    ) {
         let _worker = StreamWorkerGuard {
             worker_id,
             active_stream_worker: Arc::clone(&self.active_stream_worker),
@@ -916,8 +1059,19 @@ impl TranscriptionManager {
         }
 
         // Build run options mirroring the offline transcribe-cpp path: task +
-        // language gated against what the model actually advertises.
-        let settings = get_settings(&self.app_handle);
+        // language gated against what the model actually advertises. Overrides
+        // are layered onto this local copy exactly as in `transcribe_with`, so
+        // they never reach the persisted settings.
+        let settings = {
+            let mut settings = get_settings(&self.app_handle);
+            if let Some(language) = overrides.language {
+                settings.selected_language = language;
+            }
+            if let Some(translate) = overrides.translate_to_english {
+                settings.translate_to_english = translate;
+            }
+            settings
+        };
         let effective_language =
             effective_language_for_model(&settings, self.model_manager.as_ref(), &model_id);
         let run_plan = transcribe_cpp_run_plan(
@@ -1153,6 +1307,15 @@ impl TranscriptionManager {
             kind: Some(kind),
         }
         .emit(&self.app_handle);
+        // Mirrored to the inference server's SSE clients: a remote session shows
+        // the same spinner as the local overlay.
+        crate::server::publish_stream_event(
+            &self.app_handle,
+            crate::server::StreamEvent::Phase {
+                phase: StreamPhase::Working,
+                kind: Some(kind),
+            },
+        );
     }
 
     fn emit_stream_text(&self, committed: &str, tentative: &str) {
@@ -1161,9 +1324,97 @@ impl TranscriptionManager {
             tentative: tentative.to_string(),
         }
         .emit(&self.app_handle);
+        crate::server::publish_stream_event(
+            &self.app_handle,
+            crate::server::StreamEvent::Text {
+                committed: committed.to_string(),
+                tentative: tentative.to_string(),
+            },
+        );
+    }
+
+    /// Transcribe on the configured remote server instead of locally.
+    ///
+    /// Post-processing runs twice by design: the server applies *its* settings
+    /// (it has no way to know the client's), and this applies the client's, so
+    /// the dictating user's custom words and filler-word preference are the ones
+    /// that decide the final text. Both transforms are effectively idempotent.
+    fn transcribe_via_server(&self, audio: Vec<f32>, settings: &AppSettings) -> Result<String> {
+        let audio_for_fallback = if settings.client_fallback_local {
+            Some(audio.clone())
+        } else {
+            None
+        };
+
+        let raw = match crate::remote_client::transcribe(settings, audio) {
+            Ok(text) => text,
+            Err(err) => {
+                let Some(audio) = audio_for_fallback else {
+                    return Err(err);
+                };
+                warn!("Remote transcription failed ({err}); falling back to the local model");
+                return self.transcribe_locally_after_fallback(audio, settings);
+            }
+        };
+
+        // The server knows what it was asked for, but not what the client thinks
+        // the language is; reconstruct the evidence from the request's intent.
+        let evidence = if settings.translate_to_english {
+            OutputLanguageEvidence::TranslatedToEnglish
+        } else if settings.selected_language == "auto" {
+            OutputLanguageEvidence::Unknown
+        } else {
+            OutputLanguageEvidence::UserSelected(settings.selected_language.clone())
+        };
+
+        Ok(post_process_transcription_text(
+            raw,
+            settings,
+            false,
+            &evidence,
+            &[],
+        ))
+    }
+
+    /// Run a locally-loaded model after a remote failure, loading the selected
+    /// model first if nothing is resident.
+    fn transcribe_locally_after_fallback(
+        &self,
+        audio: Vec<f32>,
+        settings: &AppSettings,
+    ) -> Result<String> {
+        if !self.is_model_loaded() {
+            if settings.selected_model.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Remote server unavailable and no local model is selected for fallback."
+                ));
+            }
+            self.load_model(&settings.selected_model)?;
+        }
+        // The local path re-reads the persisted settings, so the already-resolved
+        // language intent has to be passed through again — along with
+        // `force_local`, which is what stops this from routing back to the
+        // server that just failed.
+        self.transcribe_with(
+            audio,
+            TranscribeOverrides {
+                language: Some(settings.selected_language.clone()),
+                translate_to_english: Some(settings.translate_to_english),
+                force_local: true,
+            },
+        )
     }
 
     pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
+        self.transcribe_with(audio, TranscribeOverrides::default())
+    }
+
+    /// [`Self::transcribe`] with per-call overrides; see [`TranscribeOverrides`].
+    pub fn transcribe_with(
+        &self,
+        audio: Vec<f32>,
+        overrides: TranscribeOverrides,
+    ) -> Result<String> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {
             return Err(anyhow::anyhow!(
@@ -1185,6 +1436,28 @@ impl TranscriptionManager {
             return Ok(String::new());
         }
 
+        // Get current settings for configuration. `settings` is a local copy
+        // that is never written back, so layering the per-call overrides on top
+        // of it here is enough to scope them to this transcription.
+        let force_local = overrides.force_local;
+        let settings = {
+            let mut settings = get_settings(&self.app_handle);
+            if let Some(language) = overrides.language {
+                settings.selected_language = language;
+            }
+            if let Some(translate) = overrides.translate_to_english {
+                settings.translate_to_english = translate;
+            }
+            settings
+        };
+
+        // Client mode: no local engine is involved at all, so this returns
+        // before every load/lease check below. Read before those checks
+        // deliberately — a client machine need not have any model downloaded.
+        if settings.inference_mode == InferenceMode::Client && !force_local {
+            return self.transcribe_via_server(audio, &settings);
+        }
+
         // Check if model is loaded, if not try to load it
         {
             // If the model is loading, wait for it to complete.
@@ -1198,9 +1471,6 @@ impl TranscriptionManager {
                 return Err(anyhow::anyhow!("Model is not loaded for transcription."));
             }
         }
-
-        // Get current settings for configuration
-        let settings = get_settings(&self.app_handle);
 
         // Validate selected language against the model's supported languages.
         // If the language isn't supported, fall back to "auto" to prevent errors.

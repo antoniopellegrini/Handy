@@ -176,6 +176,16 @@ const settingUpdaters: {
     commands.changeTranscribeGpuDevice(value as string | null),
   extra_recording_buffer_ms: (value) =>
     commands.changeExtraRecordingBufferSetting(value as number),
+  inference_mode: (value) => commands.changeInferenceMode(value as string),
+  server_enabled: (value) => commands.changeServerEnabled(value as boolean),
+  server_port: (value) => commands.changeServerPort(value as number),
+  server_expose_lan: (value) =>
+    commands.changeServerExposeLan(value as boolean),
+  client_model: (value) => commands.changeClientModel(value as string),
+  client_streaming: (value) => commands.changeClientStreaming(value as boolean),
+  client_fallback_local: (value) =>
+    commands.changeClientFallbackLocal(value as boolean),
+  client_timeout_secs: (value) => commands.changeClientTimeout(value as number),
 };
 
 export const useSettingsStore = create<SettingsStore>()(

@@ -816,6 +816,110 @@ async setSelectedChannel(channel: number | null) : Promise<Result<null, string>>
 async setModelUnloadTimeout(timeout: ModelUnloadTimeout) : Promise<void> {
     await TAURI_INVOKE("set_model_unload_timeout", { timeout });
 },
+async changeInferenceMode(mode: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_inference_mode", { mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeServerEnabled(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_server_enabled", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeServerPort(port: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_server_port", { port }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeServerExposeLan(expose: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_server_expose_lan", { expose }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async regenerateServerToken() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("regenerate_server_token") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getServerStatus() : Promise<Result<ServerStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_server_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeClientConnection(baseUrl: string, token: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_client_connection", { baseUrl, token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeClientModel(model: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_client_model", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeClientStreaming(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_client_streaming", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeClientFallbackLocal(enabled: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_client_fallback_local", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async changeClientTimeout(seconds: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_client_timeout", { seconds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async testServerConnection(baseUrl: string, token: string) : Promise<Result<RemoteServerInfo, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("test_server_connection", { baseUrl, token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async listServerModels(baseUrl: string, token: string) : Promise<Result<RemoteModel[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_server_models", { baseUrl, token }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getModelLoadStatus() : Promise<Result<ModelLoadStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_model_load_status") };
@@ -971,7 +1075,37 @@ transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_e
  * not gated on this — that follows model capability. Migrated from the old
  * `overlay_position` (position `none` → style `None`).
  */
-overlay_style?: OverlayStyle }
+overlay_style?: OverlayStyle;
+/**
+ * Whether this instance transcribes locally or offloads to a server.
+ */
+inference_mode?: InferenceMode;
+/**
+ * Serve local inference to other machines over HTTP. Independent of
+ * `inference_mode` — a GPU box can dictate locally *and* serve.
+ */
+server_enabled?: boolean; server_port?: number;
+/**
+ * Bind to all interfaces (required to be reachable from another machine).
+ */
+server_expose_lan?: boolean;
+/**
+ * Bearer token every request must present.
+ */
+server_token?: SecretString;
+/**
+ * Base URL of the remote server used when `inference_mode` is `client`.
+ */
+client_base_url?: string; client_token?: SecretString;
+/**
+ * Model id to request from the server. Empty means "whatever the server has loaded".
+ */
+client_model?: string; client_streaming?: boolean; client_fallback_local?: boolean; client_timeout_secs?: number }
+export type InferenceMode = "local" | "client"
+export type SecretString = string
+export type RemoteServerInfo = { server: string; version: string; loaded_model: string | null; streaming: boolean }
+export type RemoteModel = { id: string; name: string | null }
+export type ServerStatus = { running: boolean; bound_address: string | null; client_urls: string[]; token: string }
 export type AudioDevice = { index: string; name: string; is_default: boolean }
 export type AutoSubmitKey = "enter" | "ctrl_enter" | "cmd_enter"
 export type AvailableAccelerators = { transcribe: string[]; ort: string[]; gpu_devices: GpuDeviceOption[] }

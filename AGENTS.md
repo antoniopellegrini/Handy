@@ -70,6 +70,8 @@ Handy is a cross-platform desktop speech-to-text application built with Tauri 2.
 - `settings.rs` - Application settings management
 - `overlay.rs` - Recording overlay window (platform-specific)
 - `signal_handle.rs` - `send_transcription_input()` reusable function
+- `server/` - Networked inference server (OpenAI-compatible `/v1/audio/transcriptions` + Handy streaming extensions over SSE)
+- `remote_client.rs` - Client side of networked inference: offload transcription to a remote server
 - `utils.rs` - Platform detection helpers
 
 ### Frontend Structure (src/)
@@ -127,7 +129,48 @@ Settings are stored using Tauri's store plugin with reactive updates:
 - Model preferences (Small/Medium/Turbo/Large Whisper variants)
 - Audio feedback and translation options
 
-### Single Instance Architecture
+### Networked Inference (Server / Client Modes)
+
+A machine with a dedicated GPU can serve its transcription engine to machines
+without one. The two halves are independent: `inference_mode` decides where _this_
+install transcribes, `server_enabled` decides whether it _also_ serves.
+
+**Server** (`server/`): an axum listener with two layers on one router.
+
+- `POST /v1/audio/transcriptions`, `POST /v1/audio/translations`, `GET /v1/models` —
+  OpenAI-compatible, so any client that speaks that API works, and Handy's client
+  mode works against whisper.cpp-server / faster-whisper / OpenAI.
+- `GET /handy/v1/info` and `POST /handy/v1/stream…` — Handy extensions: capability
+  discovery and the streaming session.
+- `GET /health` — unauthenticated liveness probe, registered outside the auth layer.
+
+Every other route requires `Authorization: Bearer <token>`; the token is generated
+on first enable and compared in constant time. Inference is serialised through a
+one-permit semaphore because `TranscriptionManager` owns a single engine.
+
+**Streaming** uses two plain-HTTP channels rather than a WebSocket: audio goes up
+as chunked `POST`s of 16 kHz mono little-endian i16 PCM, and partial text comes
+down over SSE. A session holds the engine permit for its whole life, so an idle
+watchdog cancels abandoned sessions.
+
+**Client** (`remote_client.rs`): `TranscriptionManager::transcribe_with` returns
+early to the remote path before any local engine check, so a client machine needs
+no model downloaded. Streaming is driven by `run_remote_stream_worker`, which
+reuses the same command channel and guards as the local worker.
+
+**Key design decisions:**
+
+- Only WAV uploads are decoded — Handy links no mp3/flac decoder, so an unreadable
+  container is a 415 rather than garbage text.
+- Post-processing runs on both sides: the server applies its own settings, the
+  client applies the dictating user's (custom words, filler removal). Both
+  transforms are effectively idempotent.
+- `TranscribeOverrides::force_local` terminates the remote → local fallback and
+  stops a server that is itself a client from proxying requests onward.
+- In client mode, streaming eligibility comes from `client_streaming`, not from a
+  local model capability probe (`actions.rs`).
+
+## Single Instance Architecture
 
 The app enforces single instance behavior — launching when already running brings the settings window to front rather than creating a new process. Remote control flags (`--toggle-transcription`, etc.) work by launching a second instance that sends args to the running instance via `tauri_plugin_single_instance`, then exits.
 

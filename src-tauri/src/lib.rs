@@ -16,7 +16,9 @@ mod memory;
 mod overlay;
 mod paste_tx;
 pub mod portable;
+mod remote_client;
 mod secure_input;
+mod server;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -181,6 +183,11 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::CurrentTrayIconState::new());
+    // Owns the inference server's listener (if any). Registered unconditionally
+    // so the streaming event bus exists before any transcription runs and so the
+    // server can be toggled from settings without a restart.
+    app_handle.manage(Arc::new(server::ServerHandle::new()));
+    server::apply_server_settings(app_handle);
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -719,6 +726,19 @@ pub fn run(cli_args: CliArgs) {
             commands::audio::set_selected_channel,
             commands::transcription::set_model_unload_timeout,
             commands::transcription::get_model_load_status,
+            commands::network::change_inference_mode,
+            commands::network::change_server_enabled,
+            commands::network::change_server_port,
+            commands::network::change_server_expose_lan,
+            commands::network::regenerate_server_token,
+            commands::network::get_server_status,
+            commands::network::change_client_connection,
+            commands::network::change_client_model,
+            commands::network::change_client_streaming,
+            commands::network::change_client_fallback_local,
+            commands::network::change_client_timeout,
+            commands::network::test_server_connection,
+            commands::network::list_server_models,
             commands::transcription::unload_model_manually,
             commands::history::get_history_entries,
             commands::history::toggle_history_entry_saved,

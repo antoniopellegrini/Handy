@@ -12,6 +12,7 @@
   "sidebar": {
     "general": "General",
     "models": "Models",
+    "network": "Network",
     "advanced": "Advanced",
     "postProcessing": "Post Process",
     "history": "History",
@@ -246,6 +247,73 @@
       "volume": {
         "title": "Volume",
         "description": "Adjust the volume of audio feedback sounds"
+      }
+    },
+    "network": {
+      "mode": {
+        "title": "Inference",
+        "label": "Where transcription runs",
+        "description": "Run models on this machine, or send audio to a Handy server that has a faster GPU.",
+        "local": "On this machine",
+        "client": "On a remote server"
+      },
+      "copy": "Copy",
+      "client": {
+        "title": "Remote server",
+        "description": "The Handy server that transcribes for this machine.",
+        "address": {
+          "title": "Address",
+          "description": "The server's IP address and port, as shown in its Network settings. Plain HTTP is assumed unless you type a scheme."
+        },
+        "token": {
+          "title": "Access token",
+          "description": "Copy the token from the server machine. Every request must present it."
+        },
+        "test": "Test",
+        "connected": "Connected to {{server}} — model: {{model}}",
+        "serverDefault": "Server's choice",
+        "noStreaming": "live text unavailable, using batch transcription",
+        "model": {
+          "title": "Model",
+          "description": "Which of the server’s models to use. Leave empty to use whichever it already has loaded. Test the connection to load the list."
+        },
+        "streaming": {
+          "label": "Live text",
+          "description": "Show transcription as you speak, streamed from the server. Falls back to sending the whole recording at once when the server does not support it."
+        },
+        "fallback": {
+          "label": "Fall back to local model",
+          "description": "If the server cannot be reached, transcribe with the local model instead of failing. Requires a downloaded model."
+        },
+        "timeout": {
+          "title": "Timeout (seconds)",
+          "description": "How long to wait for the server before giving up on a transcription."
+        }
+      },
+      "server": {
+        "title": "Serve this machine",
+        "description": "Let other machines transcribe using this one’s models. You can keep dictating here at the same time.",
+        "enable": {
+          "label": "Run the inference server",
+          "description": "Expose an OpenAI-compatible transcription endpoint. Other Handy installs — and any tool that speaks that API — can use it."
+        },
+        "port": {
+          "title": "Port",
+          "description": "TCP port the server listens on."
+        },
+        "exposeLan": {
+          "label": "Reachable from other machines",
+          "description": "Listen on every network interface. Turn this off to accept connections from this machine only."
+        },
+        "token": {
+          "title": "Access token",
+          "description": "Required on every request. Paste it into the client machine’s settings. Regenerating it immediately locks out existing clients."
+        },
+        "address": {
+          "title": "Client address",
+          "description": "Enter one of these in the client machine’s Address field."
+        },
+        "notRunning": "The server is not listening. Check that the port is free."
       }
     },
     "advanced": {

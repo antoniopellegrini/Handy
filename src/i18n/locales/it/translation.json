@@ -12,6 +12,7 @@
   "sidebar": {
     "general": "Generale",
     "models": "Modelli",
+    "network": "Rete",
     "advanced": "Avanzate",
     "postProcessing": "Post-Elaborazione",
     "history": "Cronologia",
@@ -246,6 +247,73 @@
       "volume": {
         "title": "Volume",
         "description": "Regola il volume del feedback audio"
+      }
+    },
+    "network": {
+      "mode": {
+        "title": "Inferenza",
+        "label": "Dove viene eseguita la trascrizione",
+        "description": "Esegui i modelli su questo computer, oppure invia l’audio a un server Handy con una GPU più veloce.",
+        "local": "Su questo computer",
+        "client": "Su un server remoto"
+      },
+      "copy": "Copia",
+      "client": {
+        "title": "Server remoto",
+        "description": "Il server Handy che trascrive per questo computer.",
+        "address": {
+          "title": "Indirizzo",
+          "description": "Indirizzo IP e porta del server, come mostrati nelle sue impostazioni di Rete. Se non specifichi uno schema viene usato HTTP."
+        },
+        "token": {
+          "title": "Token di accesso",
+          "description": "Copia il token dal computer che fa da server. Ogni richiesta deve presentarlo."
+        },
+        "test": "Prova",
+        "connected": "Connesso a {{server}} — modello: {{model}}",
+        "serverDefault": "Scelta del server",
+        "noStreaming": "testo in tempo reale non disponibile, si usa la trascrizione a blocco",
+        "model": {
+          "title": "Modello",
+          "description": "Quale modello del server usare. Lascia vuoto per usare quello già caricato. Prova la connessione per caricare l’elenco."
+        },
+        "streaming": {
+          "label": "Testo in tempo reale",
+          "description": "Mostra la trascrizione mentre parli, in streaming dal server. Se il server non lo supporta, invia l’intera registrazione in un’unica richiesta."
+        },
+        "fallback": {
+          "label": "Ripiega sul modello locale",
+          "description": "Se il server non è raggiungibile, trascrivi con il modello locale invece di segnalare un errore. Richiede un modello già scaricato."
+        },
+        "timeout": {
+          "title": "Timeout (secondi)",
+          "description": "Quanto attendere il server prima di rinunciare a una trascrizione."
+        }
+      },
+      "server": {
+        "title": "Offri questo computer",
+        "description": "Permetti ad altri computer di trascrivere usando i modelli di questo. Puoi continuare a dettare qui nello stesso momento.",
+        "enable": {
+          "label": "Avvia il server di inferenza",
+          "description": "Espone un endpoint di trascrizione compatibile con OpenAI. Possono usarlo altre installazioni di Handy e qualsiasi strumento che parli quell’API."
+        },
+        "port": {
+          "title": "Porta",
+          "description": "Porta TCP su cui il server è in ascolto."
+        },
+        "exposeLan": {
+          "label": "Raggiungibile da altri computer",
+          "description": "Ascolta su tutte le interfacce di rete. Disattiva per accettare connessioni solo da questo computer."
+        },
+        "token": {
+          "title": "Token di accesso",
+          "description": "Richiesto in ogni richiesta. Incollalo nelle impostazioni del computer client. Rigenerarlo esclude immediatamente i client esistenti."
+        },
+        "address": {
+          "title": "Indirizzo per il client",
+          "description": "Inserisci uno di questi nel campo Indirizzo del computer client."
+        },
+        "notRunning": "Il server non è in ascolto. Verifica che la porta sia libera."
       }
     },
     "advanced": {
