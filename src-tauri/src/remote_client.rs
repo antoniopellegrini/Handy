@@ -464,7 +464,13 @@ impl StreamSession {
         let chunk = std::mem::take(&mut self.pending);
         let body = pcm_bytes(&chunk);
 
-        let result = tauri::async_runtime::block_on(
+        // The `async` block is load-bearing, not style. `RequestBuilder::send`
+        // is not a lazy future constructor: it builds the request's timeout
+        // `tokio::time::Sleep` eagerly, which panics off-runtime with "there is
+        // no reactor running". Passing `…send()` as an argument to `block_on`
+        // evaluates it on *this* thread, outside the runtime; inside an `async`
+        // block it runs while being polled, where the reactor exists.
+        let result = tauri::async_runtime::block_on(async {
             self.client
                 .post(
                     self.target
@@ -473,8 +479,9 @@ impl StreamSession {
                 .bearer_auth(&self.target.token)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .body(body)
-                .send(),
-        );
+                .send()
+                .await
+        });
 
         match result {
             Ok(response) if response.status().is_success() => {}
@@ -545,7 +552,9 @@ impl StreamSession {
     /// Abandon the session so the server releases its engine immediately rather
     /// than waiting for its idle watchdog.
     pub fn cancel(self) {
-        let result = tauri::async_runtime::block_on(
+        // `async` block for the same reason as `flush`: `send()` must be called
+        // while the runtime is driving us, not before we hand off to it.
+        let result = tauri::async_runtime::block_on(async {
             self.client
                 .post(
                     self.target
@@ -553,8 +562,9 @@ impl StreamSession {
                 )
                 .bearer_auth(&self.target.token)
                 .timeout(CONTROL_TIMEOUT)
-                .send(),
-        );
+                .send()
+                .await
+        });
         if let Err(err) = result {
             // Best effort: the server's watchdog reclaims the session anyway.
             debug!("Cancelling remote session {} failed: {err}", self.id);
