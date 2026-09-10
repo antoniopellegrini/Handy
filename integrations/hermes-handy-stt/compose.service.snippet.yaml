@@ -1,0 +1,9 @@
+# Merge these keys into the Hermes gateway service already present in Compose.
+# Rename "hermes" below if the existing service has another name.
+services:
+  hermes:
+    volumes:
+      - ./hermes-handy-stt/handy-stt.sh:/usr/local/bin/handy-stt.sh:ro
+    environment:
+      HANDY_STT_BASE_URL: "${HANDY_STT_BASE_URL:?Set HANDY_STT_BASE_URL in the protected Compose environment file}"
+      HANDY_STT_TOKEN: "${HANDY_STT_TOKEN:?Set HANDY_STT_TOKEN in the protected Compose environment file}"

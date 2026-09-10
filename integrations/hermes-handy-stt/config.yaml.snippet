@@ -1,0 +1,15 @@
+stt:
+  enabled: true
+  provider: handy
+  language: it
+  providers:
+    handy:
+      type: command
+      command: "/usr/local/bin/handy-stt.sh {input_path} {output_path} {model} {language}"
+      model: REPLACE_WITH_A_DOWNLOADED_HANDY_MODEL_ID
+      language: it
+      format: txt
+      timeout: 300
+      env_passthrough:
+        - HANDY_STT_BASE_URL
+        - HANDY_STT_TOKEN
