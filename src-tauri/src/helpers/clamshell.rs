@@ -25,14 +25,16 @@ pub fn is_clamshell() -> Result<bool, String> {
     Ok(stdout.contains("\"AppleClamshellState\" = Yes"))
 }
 
-/// Checks if the Mac is a laptop by detecting battery presence
-///
-/// This uses pmset to check for battery information.
-/// Returns true if a battery is detected (laptop), false otherwise (desktop)
-#[cfg(target_os = "macos")]
+/// Reports whether the current computer is a laptop.
+/// Uses battery detection on macOS and returns false on unsupported platforms.
 #[tauri::command]
 #[specta::specta]
 pub fn is_laptop() -> Result<bool, String> {
+    is_laptop_impl()
+}
+
+#[cfg(target_os = "macos")]
+fn is_laptop_impl() -> Result<bool, String> {
     let output = Command::new("pmset")
         .arg("-g")
         .arg("batt")
@@ -52,12 +54,8 @@ pub fn is_clamshell() -> Result<bool, String> {
     Ok(false)
 }
 
-/// Stub implementation for non-macOS platforms
-/// Always returns false since laptop detection is macOS-specific
 #[cfg(not(target_os = "macos"))]
-#[tauri::command]
-#[specta::specta]
-pub fn is_laptop() -> Result<bool, String> {
+fn is_laptop_impl() -> Result<bool, String> {
     Ok(false)
 }
 

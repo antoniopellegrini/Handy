@@ -1004,10 +1004,8 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
 }
 },
 /**
- * Checks if the Mac is a laptop by detecting battery presence
- * 
- * This uses pmset to check for battery information.
- * Returns true if a battery is detected (laptop), false otherwise (desktop)
+ * Reports whether the current computer is a laptop.
+ * Uses battery detection on macOS and returns false on unsupported platforms.
  */
 async isLaptop() : Promise<Result<boolean, string>> {
     try {
