@@ -3,6 +3,7 @@ use crate::audio_toolkit::{
     remove_filler_words, OutputLanguageEvidence,
 };
 use crate::managers::audio::AudioRecordingManager;
+use crate::managers::cohere_long_audio;
 use crate::managers::model::{EngineType, ModelManager};
 use crate::settings::{
     get_settings, AppSettings, InferenceMode, ModelUnloadTimeout, OrtAcceleratorSetting,
@@ -1506,6 +1507,7 @@ impl TranscriptionManager {
         // with INVALID_ARG, so the whisper extension must be gated on the
         // arch, not on the feature (see #1601).
         let mut model_is_whisper = false;
+        let mut model_is_cohere = false;
 
         // Perform transcription with the appropriate engine.
         // We use catch_unwind to prevent engine panics from poisoning the mutex,
@@ -1545,8 +1547,10 @@ impl TranscriptionManager {
             if let LoadedEngine::TranscribeCpp(session) = &engine {
                 let model = session.model();
                 let caps = model.capabilities();
+                let model_arch = model.arch();
                 model_takes_initial_prompt = model.supports(Feature::InitialPrompt);
-                model_is_whisper = model.arch() == "whisper";
+                model_is_whisper = model_arch == "whisper";
+                model_is_cohere = matches!(model_arch.as_str(), "cohere" | "cohere_asr");
                 model_supports_translate = caps.supports_translate;
                 model_languages = caps.languages;
                 debug!(
@@ -1600,17 +1604,51 @@ impl TranscriptionManager {
                             run_options.family.is_some()
                         );
 
-                        session
-                            .run(&audio, &run_options)
-                            .map(|t| {
-                                // Whisper's audio-based LID (auto mode only;
-                                // `None` when a language hint was passed).
-                                model_detected_language = t.language;
-                                t.text
-                            })
-                            .map_err(|e| {
-                                anyhow::anyhow!("transcribe-cpp transcription failed: {}", e)
-                            })
+                        if model_is_cohere && cohere_long_audio::requires_chunking(audio.len()) {
+                            let windows = cohere_long_audio::audio_windows(&audio);
+                            let window_count = windows.len();
+                            debug!(
+                                "Cohere long-form transcription: {} samples in {} overlapping windows",
+                                audio.len(),
+                                window_count
+                            );
+
+                            let mut text = String::new();
+                            for (index, window) in windows.into_iter().enumerate() {
+                                let transcript =
+                                    session.run(window, &run_options).map_err(|e| {
+                                        anyhow::anyhow!(
+                                            "transcribe-cpp Cohere window {}/{} failed: {}",
+                                            index + 1,
+                                            window_count,
+                                            e
+                                        )
+                                    })?;
+                                if model_detected_language.is_none() {
+                                    model_detected_language = transcript.language;
+                                }
+                                if !cohere_long_audio::merge_transcript(&mut text, &transcript.text)
+                                {
+                                    debug!(
+                                        "Cohere long-form transcription: no text seam for window {}; preserving its full output",
+                                        index + 1
+                                    );
+                                }
+                            }
+                            Ok(text)
+                        } else {
+                            session
+                                .run(&audio, &run_options)
+                                .map(|t| {
+                                    // Whisper's audio-based LID (auto mode only;
+                                    // `None` when a language hint was passed).
+                                    model_detected_language = t.language;
+                                    t.text
+                                })
+                                .map_err(|e| {
+                                    anyhow::anyhow!("transcribe-cpp transcription failed: {}", e)
+                                })
+                        }
                     }
                     LoadedEngine::Parakeet(parakeet_engine) => {
                         let params = ParakeetParams {
