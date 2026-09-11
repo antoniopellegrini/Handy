@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "Fjernserver",
     "checkingUpdates": "Tjekker for opdateringer...",
     "updateAvailableShort": "Opdatering tilgængelig",
     "upToDate": "Opdateret",

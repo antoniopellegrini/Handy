@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "Удалённый сервер",
     "checkingUpdates": "Проверяем наличие обновлений...",
     "updateAvailableShort": "Доступно обновление",
     "upToDate": "Не требует обновлений",

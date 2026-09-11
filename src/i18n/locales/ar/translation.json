@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "خادم بعيد",
     "checkingUpdates": "...جاري التحقق من وجود تحديثات",
     "updateAvailableShort": "تحديث متاح",
     "upToDate": "محدث",

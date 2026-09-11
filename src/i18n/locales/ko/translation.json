@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "원격 서버",
     "checkingUpdates": "업데이트 확인 중...",
     "updateAvailableShort": "업데이트 사용 가능",
     "upToDate": "최신 상태",

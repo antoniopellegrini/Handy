@@ -315,7 +315,7 @@ function App() {
           </div>
         </div>
         {/* Fixed footer at bottom */}
-        <Footer />
+        <Footer onNetworkClick={() => setCurrentSection("network")} />
       </div>
     );
   }

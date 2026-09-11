@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "रिमोट सर्वर",
     "checkingUpdates": "अपडेट जांचे जा रहे हैं...",
     "updateAvailableShort": "अपडेट उपलब्ध है",
     "upToDate": "अप-टू-डेट",

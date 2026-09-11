@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "リモートサーバー",
     "checkingUpdates": "アップデートを確認中…",
     "updateAvailableShort": "アップデートあり",
     "upToDate": "最新です",
