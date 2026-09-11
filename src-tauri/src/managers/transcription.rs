@@ -50,6 +50,38 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+fn cohere_window_transcript(
+    result: transcribe_cpp::Result<transcribe_cpp::Transcript>,
+    index: usize,
+    window_count: usize,
+) -> Result<transcribe_cpp::Transcript> {
+    match result {
+        Ok(transcript) => Ok(transcript),
+        Err(error @ transcribe_cpp::Error::OutputTruncated { .. }) => {
+            let partial = error.partial().cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "transcribe-cpp Cohere window {}/{} was truncated without partial output: {}",
+                    index + 1,
+                    window_count,
+                    error
+                )
+            })?;
+            warn!(
+                "transcribe-cpp Cohere window {}/{} was truncated; preserving partial output",
+                index + 1,
+                window_count
+            );
+            Ok(partial)
+        }
+        Err(error) => Err(anyhow::anyhow!(
+            "transcribe-cpp Cohere window {}/{} failed: {}",
+            index + 1,
+            window_count,
+            error
+        )),
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelStateEvent {
     pub event_type: String,
@@ -1615,15 +1647,11 @@ impl TranscriptionManager {
 
                             let mut text = String::new();
                             for (index, window) in windows.into_iter().enumerate() {
-                                let transcript =
-                                    session.run(window, &run_options).map_err(|e| {
-                                        anyhow::anyhow!(
-                                            "transcribe-cpp Cohere window {}/{} failed: {}",
-                                            index + 1,
-                                            window_count,
-                                            e
-                                        )
-                                    })?;
+                                let transcript = cohere_window_transcript(
+                                    session.run(window, &run_options),
+                                    index,
+                                    window_count,
+                                )?;
                                 if model_detected_language.is_none() {
                                     model_detected_language = transcript.language;
                                 }
@@ -1722,10 +1750,34 @@ impl TranscriptionManager {
                             language: lang,
                             ..Default::default()
                         };
-                        cohere_engine
-                            .transcribe(&audio, &options)
-                            .map(|r| r.text)
-                            .map_err(|e| anyhow::anyhow!("Cohere transcription failed: {}", e))
+                        if cohere_long_audio::requires_chunking(audio.len()) {
+                            let windows = cohere_long_audio::audio_windows(&audio);
+                            let window_count = windows.len();
+                            let mut text = String::new();
+
+                            for (index, window) in windows.into_iter().enumerate() {
+                                let transcript = cohere_engine
+                                    .transcribe(window, &options)
+                                    .map_err(|error| {
+                                        anyhow::anyhow!(
+                                            "Cohere window {}/{} failed: {}",
+                                            index + 1,
+                                            window_count,
+                                            error
+                                        )
+                                    })?;
+                                cohere_long_audio::merge_transcript(&mut text, &transcript.text);
+                            }
+
+                            Ok(text)
+                        } else {
+                            cohere_engine
+                                .transcribe(&audio, &options)
+                                .map(|result| result.text)
+                                .map_err(|error| {
+                                    anyhow::anyhow!("Cohere transcription failed: {}", error)
+                                })
+                        }
                     }
                 }
             }));
@@ -2451,6 +2503,21 @@ mod tests {
 
     fn languages(codes: &[&str]) -> Vec<String> {
         codes.iter().map(|code| (*code).to_string()).collect()
+    }
+
+    #[test]
+    fn truncated_cohere_window_preserves_partial_output() {
+        let error = transcribe_cpp::Error::OutputTruncated {
+            message: "generation budget exhausted".to_string(),
+            partial: Some(Box::new(transcribe_cpp::Transcript {
+                text: "partial transcript".to_string(),
+                ..Default::default()
+            })),
+        };
+
+        let transcript = cohere_window_transcript(Err(error), 1, 3).unwrap();
+
+        assert_eq!(transcript.text, "partial transcript");
     }
 
     #[test]

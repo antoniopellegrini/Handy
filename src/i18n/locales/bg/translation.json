@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "Отдалечен сървър",
     "checkingUpdates": "Проверка за актуализации...",
     "updateAvailableShort": "Налична актуализация",
     "upToDate": "Актуална версия",

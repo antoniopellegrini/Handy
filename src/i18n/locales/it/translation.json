@@ -677,6 +677,7 @@
     }
   },
   "footer": {
+    "remoteServer": "Server remoto",
     "checkingUpdates": "Controllo aggiornamenti...",
     "updateAvailableShort": "Aggiornamento disponibile",
     "upToDate": "Aggiornato",

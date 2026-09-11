@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "Uzak sunucu",
     "checkingUpdates": "Güncellemeler kontrol ediliyor...",
     "updateAvailableShort": "Güncelleme mevcut",
     "upToDate": "Güncel",

@@ -608,6 +608,7 @@
     }
   },
   "footer": {
+    "remoteServer": "遠端伺服器",
     "checkingUpdates": "檢查更新中...",
     "updateAvailableShort": "有可用更新",
     "upToDate": "已是最新版本",
