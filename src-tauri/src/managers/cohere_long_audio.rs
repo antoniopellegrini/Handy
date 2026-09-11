@@ -1,4 +1,4 @@
-//! App-level long-form handling for Cohere GGUF models.
+//! App-level long-form handling for Cohere models.
 //!
 //! Cohere Transcribe was trained on clips no longer than 35 seconds. The
 //! encoder accepts much longer input, but the decoder can silently stop early.
@@ -114,7 +114,7 @@ pub(super) fn merge_transcript(accumulated: &mut String, current: &str) -> bool 
     let current_skip = text_seam(&previous_tokens, &current_tokens);
     let matched = current_skip.is_some();
     let remainder = current_skip
-        .map(|offset| current[offset..].trim_start())
+        .map(|offset| &current[offset..])
         .unwrap_or(current);
 
     append_text(accumulated, remainder);
@@ -131,30 +131,26 @@ fn text_seam(previous: &[TextToken<'_>], current: &[TextToken<'_>]) -> Option<us
     let mut best = None;
 
     for previous_at in previous_begin..previous.len() {
-        for current_at in 0..current_end {
-            let mut length = 0;
-            while previous_at + length < previous.len()
-                && current_at + length < current_end
-                && previous[previous_at + length].text == current[current_at + length].text
-            {
-                length += 1;
-            }
+        let mut length = 0;
+        while previous_at + length < previous.len()
+            && length < current_end
+            && previous[previous_at + length].text == current[length].text
+        {
+            length += 1;
+        }
 
-            let reaches_previous_end = previous_at + length == previous.len();
-            let strong_enough =
-                length >= 2 || (length == 1 && current_at == 0 && current[current_at].is_content);
-            if !reaches_previous_end || !strong_enough {
-                continue;
-            }
+        let reaches_previous_end = previous_at + length == previous.len();
+        let content_tokens = current[..length]
+            .iter()
+            .filter(|token| token.is_content)
+            .count();
+        let strong_enough = content_tokens >= 2 || (length == 1 && content_tokens == 1);
+        if !reaches_previous_end || !strong_enough || length == current.len() {
+            continue;
+        }
 
-            let current_match_end = current_at + length;
-            if current_match_end == current.len() {
-                continue;
-            }
-
-            if best.is_none_or(|(best_length, _)| length > best_length) {
-                best = Some((length, current[current_match_end - 1].end));
-            }
+        if best.is_none_or(|(best_length, _)| length > best_length) {
+            best = Some((length, current[length - 1].end));
         }
     }
 
@@ -211,7 +207,7 @@ fn needs_space(previous: char, next: char) -> bool {
     }
     !matches!(
         next,
-        ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%'
+        ',' | '.' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '%' | '"'
     ) && !matches!(previous, '(' | '[' | '{' | '/' | '#' | '@')
 }
 
@@ -295,6 +291,36 @@ mod tests {
     }
 
     #[test]
+    fn words_before_a_possible_seam_are_never_dropped() {
+        let mut text = "we met at the red house".to_string();
+
+        assert!(!merge_transcript(
+            &mut text,
+            "then left the red house after lunch"
+        ));
+        assert_eq!(
+            text,
+            "we met at the red house then left the red house after lunch"
+        );
+    }
+
+    #[test]
+    fn punctuation_alone_is_not_a_seam() {
+        let mut text = "done.\"".to_string();
+
+        assert!(!merge_transcript(&mut text, ".\" next"));
+        assert_eq!(text, "done.\".\" next");
+    }
+
+    #[test]
+    fn closing_quote_is_attached_to_the_previous_word() {
+        let mut text = "He said hello".to_string();
+
+        assert!(merge_transcript(&mut text, "hello\" and left"));
+        assert_eq!(text, "He said hello\" and left");
+    }
+
+    #[test]
     fn a_fully_consumed_window_is_not_treated_as_overlap() {
         let mut text = "one two three".to_string();
 
@@ -313,6 +339,20 @@ mod tests {
         assert_eq!(
             text,
             "\u{4eca}\u{5929}\u{5929}\u{6c14}\u{5f88}\u{597d}\u{6211}\u{4eec}\u{51fa}\u{53d1}"
+        );
+    }
+
+    #[test]
+    fn korean_word_spacing_is_preserved_at_the_seam() {
+        let mut text = "\u{c624}\u{b298} \u{b0a0}\u{c528}".to_string();
+
+        assert!(merge_transcript(
+            &mut text,
+            "\u{b0a0}\u{c528} \u{c88b}\u{c544}\u{c694}"
+        ));
+        assert_eq!(
+            text,
+            "\u{c624}\u{b298} \u{b0a0}\u{c528} \u{c88b}\u{c544}\u{c694}"
         );
     }
 }
