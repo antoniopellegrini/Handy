@@ -127,7 +127,7 @@ fn downmix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
 
 /// Linear-interpolation resample.
 ///
-/// The recording path uses [`FrameResampler`] (rubato, sinc) because it runs
+/// The recording path uses handy-recorder resampling because it runs
 /// per-frame on live audio and quality there is worth the cost. This one runs
 /// once on a whole finished upload, where linear interpolation is inaudible to
 /// an ASR model and avoids constructing a rubato pipeline per request.

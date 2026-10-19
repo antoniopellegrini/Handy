@@ -94,6 +94,18 @@ pub struct LLMPrompt {
     pub prompt: String,
 }
 
+/// Request format a post-processing endpoint speaks. Built-in providers have a
+/// fixed format; only the custom provider lets the user change it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum PostProcessApiFormat {
+    /// OpenAI-compatible Chat Completions (`/chat/completions`)
+    #[default]
+    OpenAi,
+    /// Anthropic Messages (`/messages`)
+    Anthropic,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct PostProcessProvider {
     pub id: String,
@@ -105,6 +117,8 @@ pub struct PostProcessProvider {
     pub models_endpoint: Option<String>,
     #[serde(default)]
     pub supports_structured_output: bool,
+    #[serde(default)]
+    pub api_format: PostProcessApiFormat,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type)]
@@ -192,6 +206,18 @@ pub enum ClipboardHandling {
     #[default]
     DontModify,
     CopyToClipboard,
+}
+
+/// Script applied to Mandarin and Cantonese output. Other languages are never
+/// converted.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChineseScript {
+    /// Keep whatever script the model produced.
+    #[default]
+    AsTranscribed,
+    Simplified,
+    Traditional,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
@@ -318,18 +344,6 @@ pub enum TranscribeAcceleratorSetting {
     Auto,
     Cpu,
     Gpu,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum OrtAcceleratorSetting {
-    #[default]
-    Auto,
-    Cpu,
-    Cuda,
-    #[serde(rename = "directml")]
-    DirectMl,
-    Rocm,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
@@ -537,10 +551,12 @@ pub struct AppSettings {
     pub filler_word_removal_enabled: bool,
     #[serde(default)]
     pub custom_filler_words: Option<Vec<String>>,
+    /// Fresh installs default from the OS locale; existing stores are migrated
+    /// in `apply_settings_migrations`.
+    #[serde(default)]
+    pub chinese_script: ChineseScript,
     #[serde(default)]
     pub transcribe_accelerator: TranscribeAcceleratorSetting,
-    #[serde(default)]
-    pub ort_accelerator: OrtAcceleratorSetting,
     /// Stable transcribe.cpp device selector. This is derived from the backend's
     /// `device_id` when available (or its name for backends such as Metal),
     /// never from the process-local device registry index.
@@ -556,6 +572,11 @@ pub struct AppSettings {
     /// Experimental detector implementation. Silero remains the stable default.
     #[serde(default)]
     pub vad_backend: VadBackend,
+    /// Decode long audio in chunks cut at pauses, for models whose accuracy
+    /// degrades on long audio. Independent of `vad_enabled`, which only
+    /// decides whether silence is dropped from recordings.
+    #[serde(default = "default_long_form_chunking")]
+    pub long_form_chunking: bool,
     /// Which recording overlay to show: None / Minimal / Live. Streaming mode is
     /// not gated on this — that follows model capability. Migrated from the old
     /// `overlay_position` (position `none` → style `None`).
@@ -686,8 +707,18 @@ fn default_vad_enabled() -> bool {
     true
 }
 
+fn default_long_form_chunking() -> bool {
+    true
+}
+
 fn default_filler_word_removal_enabled() -> bool {
     true
+}
+
+fn default_chinese_script() -> ChineseScript {
+    tauri_plugin_os::locale()
+        .and_then(|locale| crate::chinese_script::chinese_script_for_locale(&locale))
+        .unwrap_or_default()
 }
 
 fn default_debug_mode() -> bool {
@@ -761,6 +792,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "zai".to_string(),
@@ -769,6 +801,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "openrouter".to_string(),
@@ -777,6 +810,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "anthropic".to_string(),
@@ -785,6 +819,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            api_format: PostProcessApiFormat::Anthropic,
         },
         PostProcessProvider {
             id: "groq".to_string(),
@@ -793,6 +828,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: false,
+            api_format: PostProcessApiFormat::OpenAi,
         },
         PostProcessProvider {
             id: "cerebras".to_string(),
@@ -801,6 +837,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAi,
         },
     ];
 
@@ -817,6 +854,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             allow_base_url_edit: false,
             models_endpoint: None,
             supports_structured_output: true,
+            api_format: PostProcessApiFormat::OpenAi,
         });
     }
 
@@ -828,6 +866,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: false,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: true,
+        api_format: PostProcessApiFormat::OpenAi,
     });
 
     // Custom provider always comes last
@@ -838,6 +877,7 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         allow_base_url_edit: true,
         models_endpoint: Some("/models".to_string()),
         supports_structured_output: false,
+        api_format: PostProcessApiFormat::OpenAi,
     });
 
     providers
@@ -921,6 +961,17 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                         provider.supports_structured_output
                     );
                     existing.supports_structured_output = provider.supports_structured_output;
+                    changed = true;
+                }
+
+                // Built-in providers have a fixed API format (migration); the
+                // custom provider's format is a user choice and is left alone.
+                if provider.id != "custom" && existing.api_format != provider.api_format {
+                    debug!(
+                        "Updating api_format for provider '{}' from {:?} to {:?}",
+                        provider.id, existing.api_format, provider.api_format
+                    );
+                    existing.api_format = provider.api_format;
                     changed = true;
                 }
             }
@@ -1068,12 +1119,13 @@ pub fn get_default_settings() -> AppSettings {
         external_script_path: None,
         filler_word_removal_enabled: default_filler_word_removal_enabled(),
         custom_filler_words: None,
+        chinese_script: default_chinese_script(),
         transcribe_accelerator: TranscribeAcceleratorSetting::default(),
-        ort_accelerator: OrtAcceleratorSetting::default(),
         transcribe_gpu_device: default_transcribe_gpu_device(),
         extra_recording_buffer_ms: 0,
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
+        long_form_chunking: default_long_form_chunking(),
         overlay_style: default_overlay_style(),
         inference_mode: InferenceMode::default(),
         server_enabled: false,
@@ -1250,6 +1302,22 @@ fn apply_settings_migrations(
             };
             updated = true;
         }
+    }
+
+    // One-time Chinese script migration: the script used to be chosen through
+    // `zh-Hans`/`zh-Hant` language intents. Split those into the recognition
+    // language and the script setting; every other upgrading user keeps the
+    // unconverted output they had. Only fresh installs get the locale default.
+    if settings_value.get("chinese_script").is_none() {
+        settings.chinese_script = match settings.selected_language.as_str() {
+            "zh-Hans" => ChineseScript::Simplified,
+            "zh-Hant" => ChineseScript::Traditional,
+            _ => ChineseScript::AsTranscribed,
+        };
+        if settings.chinese_script != ChineseScript::AsTranscribed {
+            settings.selected_language = "zh".to_string();
+        }
+        updated = true;
     }
 
     let stored_schema_version = settings_value
@@ -1513,6 +1581,10 @@ mod tests {
         assert_eq!(settings.sound_theme, SoundTheme::Pop);
         assert!(settings.filler_word_removal_enabled);
         assert_eq!(settings.vad_backend, VadBackend::Silero);
+        assert!(
+            settings.long_form_chunking,
+            "chunking is on for settings saved before it existed"
+        );
 
         // The 0.1 integer device index is cleared once for transcribe.cpp 0.2.
         // Without an exact device, the retired generic GPU choice becomes Auto.
@@ -1686,6 +1758,24 @@ mod tests {
     }
 
     #[test]
+    fn chinese_script_migration_only_carries_over_legacy_intents() {
+        for (intent, language, script) in [
+            ("zh-Hans", "zh", ChineseScript::Simplified),
+            ("zh-Hant", "zh", ChineseScript::Traditional),
+            ("auto", "auto", ChineseScript::AsTranscribed),
+        ] {
+            let mut settings = get_default_settings();
+            settings.selected_language = intent.to_string();
+            settings.chinese_script = ChineseScript::Traditional;
+            let raw = serde_json::json!({ "selected_language": intent });
+
+            assert!(apply_settings_migrations(&mut settings, &raw));
+            assert_eq!(settings.selected_language, language);
+            assert_eq!(settings.chinese_script, script);
+        }
+    }
+
+    #[test]
     fn shortcut_activation_migration_maps_push_to_talk_true() {
         let mut settings = get_default_settings();
         let raw = serde_json::json!({
@@ -1808,6 +1898,7 @@ mod tests {
             "onboarding_completed": false,
             "whats_new_last_seen_version": default_whats_new_last_seen_version(),
             "overlay_style": "live",
+            "chinese_script": "as_transcribed",
             "transcribe_accelerator": "gpu",
             "transcribe_gpu_device": settings.transcribe_gpu_device
         });
@@ -1817,6 +1908,25 @@ mod tests {
             settings.transcribe_gpu_device.as_deref(),
             Some("[\"vulkan\",\"id\",\"0000:01:00.0\"]")
         );
+    }
+
+    #[test]
+    fn post_process_defaults_sync_builtin_api_format_but_keep_custom() {
+        let mut settings = get_default_settings();
+        for provider in settings.post_process_providers.iter_mut() {
+            match provider.id.as_str() {
+                // Settings saved before the built-in provider moved to Messages
+                "anthropic" => provider.api_format = PostProcessApiFormat::OpenAi,
+                "custom" => provider.api_format = PostProcessApiFormat::Anthropic,
+                _ => {}
+            }
+        }
+
+        assert!(ensure_post_process_defaults(&mut settings));
+
+        let format_of = |id: &str| settings.post_process_provider(id).unwrap().api_format;
+        assert_eq!(format_of("anthropic"), PostProcessApiFormat::Anthropic);
+        assert_eq!(format_of("custom"), PostProcessApiFormat::Anthropic);
     }
 
     #[test]

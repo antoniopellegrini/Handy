@@ -136,6 +136,9 @@ struct Session {
     events: Mutex<Option<broadcast::Receiver<StreamEvent>>>,
     /// Millis since the epoch of the last request touching this session.
     last_seen: AtomicU64,
+    /// Total PCM samples uploaded, used to detect incomplete live decoding.
+    samples: AtomicU64,
+    overrides: TranscribeOverrides,
     /// Set once the client comes back for the session it opened. Until then the
     /// watchdog holds it to [`SESSION_UNCLAIMED_TIMEOUT`].
     claimed: AtomicBool,
@@ -225,11 +228,18 @@ pub async fn open_session(
         super::openai::ensure_model_loaded(&state, model)?;
     }
 
+    let overrides = TranscribeOverrides {
+        language: request.language.filter(|language| !language.is_empty()),
+        translate_to_english: None,
+        force_local: true,
+    };
     let id = new_session_id();
     let session = Arc::new(Session {
         _permit: permit,
         events: Mutex::new(Some(state.streams.bus.subscribe())),
         last_seen: AtomicU64::new(now_ms()),
+        samples: AtomicU64::new(0),
+        overrides: overrides.clone(),
         claimed: AtomicBool::new(false),
         closed: AtomicBool::new(false),
     });
@@ -246,11 +256,7 @@ pub async fn open_session(
     // The session's language overrides the serving machine's own preference, and
     // `force_local` stops a server that is itself in client mode from proxying
     // the session to a third machine.
-    state.transcription.start_stream_with(TranscribeOverrides {
-        language: request.language.filter(|language| !language.is_empty()),
-        translate_to_english: None,
-        force_local: true,
-    });
+    state.transcription.start_stream_with(overrides);
 
     spawn_watchdog(Arc::clone(&state), id.clone());
 
@@ -285,6 +291,7 @@ pub async fn push_audio(
 
     let samples = frame.len();
     state.transcription.stream_router().feed(&frame);
+    session.samples.fetch_add(samples as u64, Ordering::Relaxed);
 
     Ok(Json(json!({ "accepted_samples": samples })))
 }
@@ -356,9 +363,13 @@ pub async fn finalize(
     session.closed.store(true, Ordering::Release);
 
     let transcription = Arc::clone(&state.transcription);
-    let result = tauri::async_runtime::spawn_blocking(move || transcription.finalize_stream())
-        .await
-        .map_err(|err| ApiError::internal(format!("finalize task failed: {err}")))?;
+    let samples = session.samples.load(Ordering::Relaxed) as usize;
+    let overrides = session.overrides.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        transcription.finalize_stream(samples, overrides)
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("finalize task failed: {err}")))?;
 
     // The session (and its engine permit) is released when `session` drops at
     // the end of this function, whichever branch is taken.
